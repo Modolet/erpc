@@ -114,3 +114,6 @@ vs_BuildTools*
 
 # Zephyr's repo link
 __repo__/
+
+.direnv
+flake.lock
