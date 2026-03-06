@@ -397,7 +397,13 @@ private:
      *
      * @return Set of parameter names that are referenced by @length annotations.
      */
-    std::set<std::string> collectLengthParams(Function *fn);
+    enum class LengthParamUsage
+    {
+        kRequest,
+        kResponse,
+    };
+
+    std::set<std::string> collectLengthParams(Function *fn, LengthParamUsage usage);
 
     /*!
      * @brief This function processes function parameters and builds parameter
@@ -413,7 +419,8 @@ private:
      *
      * @return True if function has output parameters.
      */
-    bool processFunctionParameters(Function *fn, const std::set<std::string> &lengthParams, cpptempl::data_list &params,
+    bool processFunctionParameters(Function *fn, const std::set<std::string> &requestLengthParams,
+                                   const std::set<std::string> &responseLengthParams, cpptempl::data_list &params,
                                    std::stringstream &asyncParams, std::stringstream &clientParams,
                                    std::vector<std::string> &outParamNames, std::vector<DataType *> &outParamTypes);
 

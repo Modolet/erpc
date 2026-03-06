@@ -278,14 +278,16 @@ cpptempl::data_map RustGenerator::getFunctionTemplateData(Group *group, Function
     stringstream clientParams;
 
     // Collect @length annotated parameters to skip in trait method signatures
-    std::set<std::string> lengthParams = collectLengthParams(fn);
+    std::set<std::string> requestLengthParams = collectLengthParams(fn, LengthParamUsage::kRequest);
+    std::set<std::string> responseLengthParams = collectLengthParams(fn, LengthParamUsage::kResponse);
 
     // Process parameters
     data_list params;
     vector<string> outParamNames;
     vector<DataType *> outParamTypes;
     bool hasOutParams =
-        processFunctionParameters(fn, lengthParams, params, asyncParams, clientParams, outParamNames, outParamTypes);
+        processFunctionParameters(fn, requestLengthParams, responseLengthParams, params, asyncParams, clientParams,
+                                  outParamNames, outParamTypes);
 
     functionInfo["parameters"] = asyncParams.str();
     functionInfo["clientParameters"] = clientParams.str();
@@ -994,7 +996,7 @@ std::string RustGenerator::generateClientResponseDeserialization(Function *fn,
     responseCode << "            \n";
 
     // Collect @length annotated parameters to skip reading them separately
-    std::set<std::string> lengthParams = collectLengthParams(fn);
+    std::set<std::string> lengthParams = collectLengthParams(fn, LengthParamUsage::kResponse);
     std::set<std::string> rustLengthParams;
     std::map<std::string, std::string> rustToOriginalParamNames;
     for (auto param : fn->getParameters().getMembers())
@@ -1167,18 +1169,7 @@ std::string RustGenerator::generateServerParameterDeserialization(Function *fn, 
 {
     stringstream code;
 
-    // Collect @length annotated parameters to skip reading them separately
-    std::set<std::string> lengthParams;
-    for (auto param : fn->getParameters().getMembers())
-    {
-        // Check if this parameter is referenced by any @length annotation
-        StructMember *referencedFrom =
-            findParamReferencedFromAnn(fn->getParameters().getMembers(), param->getName(), LENGTH_ANNOTATION);
-        if (referencedFrom)
-        {
-            lengthParams.insert(param->getName());
-        }
-    }
+    std::set<std::string> lengthParams = collectLengthParams(fn, LengthParamUsage::kRequest);
 
     // Collect input parameters
     std::vector<StructMember *> inParams;
@@ -1359,13 +1350,12 @@ std::string RustGenerator::generateServerResponseSerialization(Function *fn, con
     stringstream code;
 
     // Collect @length annotated parameters to skip serializing them separately
-    std::set<std::string> lengthParams = collectLengthParams(fn);
+    std::set<std::string> lengthParams = collectLengthParams(fn, LengthParamUsage::kResponse);
 
     struct OutParamInfo
     {
         std::string name;
         DataType *type;
-        bool isLengthParam;
     };
 
     std::vector<OutParamInfo> outParams;
@@ -1376,9 +1366,12 @@ std::string RustGenerator::generateServerResponseSerialization(Function *fn, con
         if (direction == param_direction_t::kOutDirection || direction == param_direction_t::kInoutDirection)
         {
             string paramName = escapeKeyword(toSnakeCase(param->getName()));
-            bool isLengthParam = (lengthParams.find(param->getName()) != lengthParams.end());
+            if (lengthParams.find(param->getName()) != lengthParams.end())
+            {
+                continue;
+            }
 
-            outParams.push_back({ paramName, param->getDataType(), isLengthParam });
+            outParams.push_back({ paramName, param->getDataType() });
             hasOutParams = true;
         }
     }
@@ -1403,12 +1396,6 @@ std::string RustGenerator::generateServerResponseSerialization(Function *fn, con
         // Serialize out parameters first
         for (const auto &outParam : outParams)
         {
-            if (outParam.isLengthParam)
-            {
-                code << "                            let _ = " << outParam.name
-                     << "; // Length parameter derived automatically\n";
-                continue;
-            }
             code << "                            " << generateTypeWrite(outParam.type, outParam.name)
                  << "; // Out parameter: " << outParam.name << "\n";
         }
@@ -1422,17 +1409,8 @@ std::string RustGenerator::generateServerResponseSerialization(Function *fn, con
         // Function has only out parameters
         if (outParams.size() == 1)
         {
-            if (outParams[0].isLengthParam)
-            {
-                code << "                            let " << outParams[0].name << " = response;\n";
-                code << "                            let _ = " << outParams[0].name
-                     << "; // Length parameter derived automatically\n";
-            }
-            else
-            {
-                code << "                            " << generateTypeWrite(outParams[0].type, "response")
-                     << "; // Single out parameter: " << outParams[0].name << "\n";
-            }
+            code << "                            " << generateTypeWrite(outParams[0].type, "response")
+                 << "; // Single out parameter: " << outParams[0].name << "\n";
         }
         else
         {
@@ -1448,12 +1426,6 @@ std::string RustGenerator::generateServerResponseSerialization(Function *fn, con
 
             for (const auto &outParam : outParams)
             {
-                if (outParam.isLengthParam)
-                {
-                    code << "                            let _ = " << outParam.name
-                         << "; // Length parameter derived automatically\n";
-                    continue;
-                }
                 code << "                            " << generateTypeWrite(outParam.type, outParam.name)
                      << "; // Out parameter: " << outParam.name << "\n";
             }
@@ -1474,7 +1446,7 @@ std::string RustGenerator::generateServerErrorResponseSerialization(Function *fn
     stringstream code;
 
     // Collect @length annotated parameters to skip serializing them separately
-    std::set<std::string> lengthParams = collectLengthParams(fn);
+    std::set<std::string> lengthParams = collectLengthParams(fn, LengthParamUsage::kResponse);
 
     // Collect output parameters with names, filtering out @length parameters
     struct OutParamInfo
@@ -1656,15 +1628,38 @@ std::string RustGenerator::generateTypeWrite(DataType *dataType, const std::stri
     return code.str();
 }
 
-std::set<std::string> RustGenerator::collectLengthParams(Function *fn)
+std::set<std::string> RustGenerator::collectLengthParams(Function *fn, LengthParamUsage usage)
 {
     std::set<std::string> lengthParams;
     for (auto param : fn->getParameters().getMembers())
     {
-        // Check if this parameter is referenced by any @length annotation
         StructMember *referencedFrom =
             findParamReferencedFromAnn(fn->getParameters().getMembers(), param->getName(), LENGTH_ANNOTATION);
-        if (referencedFrom)
+        if (!referencedFrom)
+        {
+            continue;
+        }
+
+        param_direction_t paramDirection = getDirection(param);
+        param_direction_t referencedDirection = getDirection(referencedFrom);
+
+        bool shouldSkip = false;
+        if (usage == LengthParamUsage::kRequest)
+        {
+            shouldSkip = ((paramDirection == param_direction_t::kInDirection ||
+                           paramDirection == param_direction_t::kInoutDirection) &&
+                          (referencedDirection == param_direction_t::kInDirection ||
+                           referencedDirection == param_direction_t::kInoutDirection));
+        }
+        else
+        {
+            shouldSkip = ((paramDirection == param_direction_t::kOutDirection ||
+                           paramDirection == param_direction_t::kInoutDirection) &&
+                          (referencedDirection == param_direction_t::kOutDirection ||
+                           referencedDirection == param_direction_t::kInoutDirection));
+        }
+
+        if (shouldSkip)
         {
             lengthParams.insert(param->getName());
         }
@@ -1672,7 +1667,8 @@ std::set<std::string> RustGenerator::collectLengthParams(Function *fn)
     return lengthParams;
 }
 
-bool RustGenerator::processFunctionParameters(Function *fn, const std::set<std::string> &lengthParams,
+bool RustGenerator::processFunctionParameters(Function *fn, const std::set<std::string> &requestLengthParams,
+                                              const std::set<std::string> &responseLengthParams,
                                               cpptempl::data_list &params, std::stringstream &asyncParams,
                                               std::stringstream &clientParams, std::vector<std::string> &outParamNames,
                                               std::vector<DataType *> &outParamTypes)
@@ -1693,7 +1689,7 @@ bool RustGenerator::processFunctionParameters(Function *fn, const std::set<std::
         if (direction == param_direction_t::kInDirection || direction == param_direction_t::kInoutDirection)
         {
             // Skip @length parameters in trait method signatures
-            if (lengthParams.find(param->getName()) != lengthParams.end())
+            if (requestLengthParams.find(param->getName()) != requestLengthParams.end())
             {
                 continue;
             }
@@ -1715,6 +1711,11 @@ bool RustGenerator::processFunctionParameters(Function *fn, const std::set<std::
 
         if (direction == param_direction_t::kOutDirection || direction == param_direction_t::kInoutDirection)
         {
+            if (responseLengthParams.find(param->getName()) != responseLengthParams.end())
+            {
+                continue;
+            }
+
             hasOutParams = true;
             outParamNames.push_back(escapeKeyword(toSnakeCase(param->getName())));
             outParamTypes.push_back(param->getDataType());
@@ -1727,12 +1728,18 @@ bool RustGenerator::processFunctionParameters(Function *fn, const std::set<std::
 std::string RustGenerator::generateParameterCallList(Function *fn)
 {
     std::stringstream paramCallList;
+    std::set<std::string> lengthParams = collectLengthParams(fn, LengthParamUsage::kRequest);
     bool firstParam = true;
     for (auto param : fn->getParameters().getMembers())
     {
         param_direction_t direction = getDirection(param);
         if (direction == param_direction_t::kInDirection || direction == param_direction_t::kInoutDirection)
         {
+            if (lengthParams.find(param->getName()) != lengthParams.end())
+            {
+                continue;
+            }
+
             if (!firstParam)
                 paramCallList << ", ";
             firstParam = false;
@@ -1860,7 +1867,7 @@ std::string RustGenerator::generateMethodCallParameters(Function *fn, const std:
 std::string RustGenerator::generateOnewayServerHandler(Function *fn, const std::string &codecParamName)
 {
     std::stringstream serverHandlerCode;
-    std::set<std::string> lengthParams = collectLengthParams(fn);
+    std::set<std::string> lengthParams = collectLengthParams(fn, LengthParamUsage::kRequest);
 
     serverHandlerCode << "                    \n";
 
@@ -1880,7 +1887,7 @@ std::string RustGenerator::generateRegularServerHandler(Function *fn, const std:
                                                         const std::string &sequenceParamName)
 {
     std::stringstream serverHandlerCode;
-    std::set<std::string> lengthParams = collectLengthParams(fn);
+    std::set<std::string> lengthParams = collectLengthParams(fn, LengthParamUsage::kRequest);
 
     // Get the interface name to construct proper constant names
     Interface *interface = fn->getInterface();
@@ -1901,11 +1908,13 @@ std::string RustGenerator::generateRegularServerHandler(Function *fn, const std:
     DataType *returnType = fn->getReturnType();
     bool hasReturnValue = (returnType && returnType->getDataType() != DataType::data_type_t::kVoidType);
 
+    std::set<std::string> responseLengthParams = collectLengthParams(fn, LengthParamUsage::kResponse);
     bool hasOutParams = false;
     for (auto param : fn->getParameters().getMembers())
     {
         param_direction_t direction = getDirection(param);
-        if (direction == param_direction_t::kOutDirection || direction == param_direction_t::kInoutDirection)
+        if ((direction == param_direction_t::kOutDirection || direction == param_direction_t::kInoutDirection) &&
+            responseLengthParams.find(param->getName()) == responseLengthParams.end())
         {
             hasOutParams = true;
             break;
@@ -1964,7 +1973,8 @@ std::string RustGenerator::generateClientMethodCode(Function *fn, std::vector<Da
     std::vector<StructMember *> inParams;
     std::vector<std::string> clientOutParamNames;
     // Collect @length annotated parameters to skip in client serialization
-    std::set<std::string> clientLengthParams = collectLengthParams(fn);
+    std::set<std::string> clientLengthParams = collectLengthParams(fn, LengthParamUsage::kRequest);
+    std::set<std::string> responseLengthParams = collectLengthParams(fn, LengthParamUsage::kResponse);
 
     for (auto param : fn->getParameters().getMembers())
     {
@@ -1979,6 +1989,11 @@ std::string RustGenerator::generateClientMethodCode(Function *fn, std::vector<Da
         }
         if (direction == param_direction_t::kOutDirection || direction == param_direction_t::kInoutDirection)
         {
+            if (responseLengthParams.find(param->getName()) != responseLengthParams.end())
+            {
+                continue;
+            }
+
             outParamTypes.push_back(param->getDataType());
             clientOutParamNames.push_back(escapeKeyword(toSnakeCase(param->getName())));
             hasOutParams = true;

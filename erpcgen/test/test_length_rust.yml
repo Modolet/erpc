@@ -1,0 +1,22 @@
+---
+name: out_binary_with_in_length
+desc: verify out binary keeps explicit input length in rust client and server
+idl: |
+  enum OisAxis {
+    kOisAxisX = 0
+  }
+
+  enum OisErrorCode {
+    kOisErrorOk = 0
+  }
+
+  interface sis7500 {
+    ois_sis7500_read_reg(OisAxis axis, in uint8 reg, out binary val @length(length), in uint16 length) -> OisErrorCode
+  }
+lang: rust
+test.rs:
+  - pub async fn ois_sis7500_read_reg(&mut self, axis: OisAxis, reg: u8, length: u16) -> Result<(OisErrorCode, Vec<u8>), Box<dyn std::error::Error + Send + Sync>>
+  - request_codec.write_uint16(length)?;
+  - let length = codec.read_uint16()?;
+  - let result = self.service.ois_sis7500_read_reg(axis, reg, length).await;
+  - let val = (&mut response_codec).read_binary()?;
