@@ -1,14 +1,14 @@
 use async_trait::async_trait;
-use futures::{future::poll_fn, pin_mut, Future};
-use futures_timer::Delay;
-use nusb::{
-    descriptors::TransferType,
-    transfer::{Buffer, Bulk, BulkOrInterrupt, Direction, EndpointDirection, In, Out},
-    Endpoint,
-    MaybeFuture,
+use futures::{
+    channel::oneshot,
+    future::{select, Either},
+    pin_mut,
 };
+use futures_timer::Delay;
+use rusb::{Direction, TransferType, UsbContext};
 use std::{
-    task::Poll,
+    sync::mpsc,
+    thread,
     time::{Duration, Instant},
 };
 
@@ -20,26 +20,56 @@ const MAX_CHUNK_SIZE: usize = 512;
 const VENDOR_SPECIFIC_CLASS: u8 = 0xff;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UsbDirection {
+    In,
+    Out,
+}
+
+impl UsbDirection {
+    fn from_rusb(direction: Direction) -> Self {
+        match direction {
+            Direction::In => Self::In,
+            Direction::Out => Self::Out,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UsbTransferType {
+    Bulk,
+    Other,
+}
+
+impl UsbTransferType {
+    fn from_rusb(transfer_type: TransferType) -> Self {
+        match transfer_type {
+            TransferType::Bulk => Self::Bulk,
+            _ => Self::Other,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct EndpointAddress {
     pub address: u8,
-    pub direction: Direction,
-    pub transfer_type: TransferType,
+    pub direction: UsbDirection,
+    pub transfer_type: UsbTransferType,
 }
 
 impl EndpointAddress {
     pub fn bulk_in(address: u8) -> Self {
         Self {
             address,
-            direction: Direction::In,
-            transfer_type: TransferType::Bulk,
+            direction: UsbDirection::In,
+            transfer_type: UsbTransferType::Bulk,
         }
     }
 
     pub fn bulk_out(address: u8) -> Self {
         Self {
             address,
-            direction: Direction::Out,
-            transfer_type: TransferType::Bulk,
+            direction: UsbDirection::Out,
+            transfer_type: UsbTransferType::Bulk,
         }
     }
 }
@@ -93,14 +123,16 @@ pub fn select_interface_and_endpoints(
             .endpoints
             .iter()
             .find(|endpoint| {
-                endpoint.transfer_type == TransferType::Bulk && endpoint.direction == Direction::In
+                endpoint.transfer_type == UsbTransferType::Bulk
+                    && endpoint.direction == UsbDirection::In
             })
             .map(|endpoint| endpoint.address);
         let endpoint_out = candidate
             .endpoints
             .iter()
             .find(|endpoint| {
-                endpoint.transfer_type == TransferType::Bulk && endpoint.direction == Direction::Out
+                endpoint.transfer_type == UsbTransferType::Bulk
+                    && endpoint.direction == UsbDirection::Out
             })
             .map(|endpoint| endpoint.address);
 
@@ -121,221 +153,282 @@ pub fn select_interface_and_endpoints(
     }
 }
 
-/// USB transport kept under the historical `rusb` module name for API compatibility.
-///
-/// The implementation is backed by `nusb` to provide runtime-agnostic bulk transfer futures.
-pub struct RusbTransport {
-    interface: Option<nusb::Interface>,
-    endpoint_out: Option<Endpoint<Bulk, Out>>,
-    endpoint_in: Option<Endpoint<Bulk, In>>,
-    timeout: Duration,
-    connected: bool,
+enum WorkerCommand {
+    Send {
+        data: Vec<u8>,
+        timeout: Duration,
+        reply: oneshot::Sender<ErpcResult<()>>,
+    },
+    Receive {
+        length: usize,
+        timeout: Duration,
+        reply: oneshot::Sender<ErpcResult<Vec<u8>>>,
+    },
+    Close {
+        reply: oneshot::Sender<ErpcResult<()>>,
+    },
+}
+
+struct WorkerState {
+    handle: rusb::DeviceHandle<rusb::Context>,
+    endpoint_out: u8,
+    endpoint_in: u8,
+    interface_number: u8,
     read_buffer: Vec<u8>,
-    in_packet_size: usize,
 }
 
-impl RusbTransport {
-    pub async fn connect(vendor_id: u16, product_id: u16) -> ErpcResult<Self> {
-        let device_info = nusb::list_devices()
-            .wait()
-            .map_err(|e| TransportError::ConnectionFailed(e.to_string()))?
-            .find(|device| device.vendor_id() == vendor_id && device.product_id() == product_id)
-            .ok_or_else(|| TransportError::ConnectionFailed("Device not found".to_string()))?;
-
-        let device = device_info
-            .open()
-            .wait()
-            .map_err(|e| TransportError::ConnectionFailed(e.to_string()))?;
-        let active_configuration = device
-            .active_configuration()
-            .map_err(|e| TransportError::ConnectionFailed(e.to_string()))?;
-
-        let candidates = active_configuration
-            .interface_alt_settings()
-            .map(|descriptor| InterfaceCandidate {
-                interface_number: descriptor.interface_number(),
-                alternate_setting: descriptor.alternate_setting(),
-                class_code: descriptor.class(),
-                endpoints: descriptor
-                    .endpoints()
-                    .map(|endpoint| EndpointAddress {
-                        address: endpoint.address(),
-                        direction: endpoint.direction(),
-                        transfer_type: endpoint.transfer_type(),
-                    })
-                    .collect(),
-            })
-            .collect::<Vec<_>>();
-
-        let selected = select_interface_and_endpoints(&candidates)
-            .map_err(|e| TransportError::ConnectionFailed(e.to_string()))?;
-
-        let interface = device
-            .detach_and_claim_interface(selected.interface_number)
-            .wait()
-            .map_err(|e| TransportError::ConnectionFailed(e.to_string()))?;
-
-        if selected.alternate_setting != interface.get_alt_setting() {
-            interface
-                .set_alt_setting(selected.alternate_setting)
-                .wait()
-                .map_err(|e| TransportError::ConnectionFailed(e.to_string()))?;
-        }
-
-        let endpoint_out = interface
-            .endpoint::<Bulk, Out>(selected.endpoint_out)
-            .map_err(|e| TransportError::ConnectionFailed(e.to_string()))?;
-        let endpoint_in = interface
-            .endpoint::<Bulk, In>(selected.endpoint_in)
-            .map_err(|e| TransportError::ConnectionFailed(e.to_string()))?;
-        let in_packet_size = endpoint_in.max_packet_size();
-
-        Ok(Self {
-            interface: Some(interface),
-            endpoint_out: Some(endpoint_out),
-            endpoint_in: Some(endpoint_in),
-            timeout: Duration::from_millis(600),
-            connected: true,
-            read_buffer: Vec::new(),
-            in_packet_size,
-        })
-    }
-
-    fn ensure_open(&self) -> ErpcResult<()> {
-        if self.connected {
-            Ok(())
-        } else {
-            Err(TransportError::Closed.into())
-        }
-    }
-
-    fn endpoint_out_mut(&mut self) -> ErpcResult<&mut Endpoint<Bulk, Out>> {
-        self.endpoint_out
-            .as_mut()
-            .ok_or_else(|| TransportError::Closed.into())
-    }
-
-    fn endpoint_in_mut(&mut self) -> ErpcResult<&mut Endpoint<Bulk, In>> {
-        self.endpoint_in
-            .as_mut()
-            .ok_or_else(|| TransportError::Closed.into())
-    }
-
-    fn remaining_timeout(&self, start_time: Instant) -> ErpcResult<Duration> {
-        let remaining = self.timeout.saturating_sub(start_time.elapsed());
-        if remaining.is_zero() {
-            Err(TransportError::Timeout.into())
-        } else {
-            Ok(remaining)
-        }
-    }
-
-    fn round_in_request_len(&self, min_len: usize) -> usize {
-        let packet_size = self.in_packet_size.max(1);
-        let target = min_len.max(MAX_CHUNK_SIZE).max(packet_size);
-        target.div_ceil(packet_size) * packet_size
-    }
-}
-
-async fn wait_for_completion<EpType, Dir>(
-    endpoint: &mut Endpoint<EpType, Dir>,
-    timeout: Duration,
-) -> Result<nusb::transfer::Completion, TransportError>
-where
-    EpType: BulkOrInterrupt,
-    Dir: EndpointDirection,
-{
-    let delay = Delay::new(timeout);
-    pin_mut!(delay);
-    let mut timed_out = false;
-
-    poll_fn(|cx| {
-        if let Poll::Ready(completion) = endpoint.poll_next_complete(cx) {
-            return if timed_out {
-                Poll::Ready(Err(TransportError::Timeout))
-            } else {
-                Poll::Ready(Ok(completion))
-            };
-        }
-
-        if !timed_out && delay.as_mut().poll(cx).is_ready() {
-            timed_out = true;
-            endpoint.cancel_all();
-            cx.waker().wake_by_ref();
-        }
-
-        Poll::Pending
-    })
-    .await
-}
-
-fn map_send_error(error: impl ToString) -> crate::ErpcError {
-    TransportError::SendFailed(error.to_string()).into()
-}
-
-fn map_receive_error(error: impl ToString) -> crate::ErpcError {
-    TransportError::ReceiveFailed(error.to_string()).into()
-}
-
-#[async_trait]
-impl FramedTransport for RusbTransport {
-    async fn base_send(&mut self, data: &[u8]) -> ErpcResult<()> {
-        self.ensure_open()?;
+impl WorkerState {
+    fn send(&mut self, data: &[u8], timeout: Duration) -> ErpcResult<()> {
         let start_time = Instant::now();
 
         for chunk in data.chunks(MAX_CHUNK_SIZE) {
-            let remaining_timeout = self.remaining_timeout(start_time)?;
-            let endpoint_out = self.endpoint_out_mut()?;
-            endpoint_out.submit(chunk.to_vec().into());
+            let remaining_timeout = timeout.saturating_sub(start_time.elapsed());
+            if remaining_timeout.is_zero() {
+                return Err(TransportError::Timeout.into());
+            }
 
-            let completion = wait_for_completion(endpoint_out, remaining_timeout).await?;
-            completion.status.map_err(map_send_error)?;
+            let written = self
+                .handle
+                .write_bulk(self.endpoint_out, chunk, remaining_timeout)
+                .map_err(|e| TransportError::SendFailed(e.to_string()))?;
+
+            if written != chunk.len() {
+                return Err(
+                    TransportError::SendFailed("partial USB bulk write".to_string()).into(),
+                );
+            }
         }
 
         Ok(())
     }
 
-    async fn base_receive(&mut self, length: usize) -> ErpcResult<Vec<u8>> {
-        self.ensure_open()?;
-
+    fn receive(&mut self, length: usize, timeout: Duration) -> ErpcResult<Vec<u8>> {
         if self.read_buffer.len() < length {
             let start_time = Instant::now();
 
             while self.read_buffer.len() < length {
-                let remaining_timeout = self.remaining_timeout(start_time)?;
-                let requested_len = self.round_in_request_len(length - self.read_buffer.len());
-                let endpoint_in = self.endpoint_in_mut()?;
-                endpoint_in.submit(Buffer::new(requested_len));
-
-                let completion = wait_for_completion(endpoint_in, remaining_timeout).await?;
-                let status = completion.status;
-                let packet = completion.buffer.into_vec();
-                let packet_len = packet.len();
-
-                if packet_len > 0 {
-                    self.read_buffer.extend_from_slice(&packet);
+                let remaining_timeout = timeout.saturating_sub(start_time.elapsed());
+                if remaining_timeout.is_zero() {
+                    return Err(TransportError::Timeout.into());
                 }
 
-                match status {
-                    Ok(()) => {
-                        if packet_len < requested_len {
-                            break;
-                        }
-                    }
-                    Err(error) => {
-                        if self.read_buffer.is_empty() {
-                            return Err(map_receive_error(error));
-                        }
-                        break;
-                    }
+                let mut temp_buf = [0u8; MAX_CHUNK_SIZE];
+                let read_count = self
+                    .handle
+                    .read_bulk(self.endpoint_in, &mut temp_buf, remaining_timeout)
+                    .map_err(|e| TransportError::ReceiveFailed(e.to_string()))?;
+
+                if read_count > 0 {
+                    self.read_buffer.extend_from_slice(&temp_buf[..read_count]);
+                }
+
+                if read_count < MAX_CHUNK_SIZE {
+                    break;
                 }
             }
         }
 
         let available_data = self.read_buffer.len().min(length);
-        let result = self.read_buffer.drain(..available_data).collect();
+        Ok(self.read_buffer.drain(..available_data).collect())
+    }
 
-        Ok(result)
+    fn close(mut self) -> ErpcResult<()> {
+        self.handle
+            .release_interface(self.interface_number)
+            .map_err(|e| TransportError::ConnectionFailed(e.to_string()))?;
+        Ok(())
+    }
+}
+
+fn spawn_worker(state: WorkerState) -> mpsc::Sender<WorkerCommand> {
+    let (tx, rx) = mpsc::channel::<WorkerCommand>();
+
+    thread::spawn(move || {
+        let mut state = state;
+
+        while let Ok(command) = rx.recv() {
+            match command {
+                WorkerCommand::Send {
+                    data,
+                    timeout,
+                    reply,
+                } => {
+                    let _ = reply.send(state.send(&data, timeout));
+                }
+                WorkerCommand::Receive {
+                    length,
+                    timeout,
+                    reply,
+                } => {
+                    let _ = reply.send(state.receive(length, timeout));
+                }
+                WorkerCommand::Close { reply } => {
+                    let result = state.close();
+                    let _ = reply.send(result);
+                    return;
+                }
+            }
+        }
+
+        let _ = state.close();
+    });
+
+    tx
+}
+
+/// USB transport kept under the historical `rusb` module name for API compatibility.
+///
+/// Blocking USB I/O is isolated inside a worker thread so the async API does not block the caller's executor thread.
+pub struct RusbTransport {
+    worker_tx: Option<mpsc::Sender<WorkerCommand>>,
+    timeout: Duration,
+    connected: bool,
+}
+
+impl RusbTransport {
+    pub async fn connect(vendor_id: u16, product_id: u16) -> ErpcResult<Self> {
+        let context =
+            rusb::Context::new().map_err(|e| TransportError::ConnectionFailed(e.to_string()))?;
+        let devices = context
+            .devices()
+            .map_err(|e| TransportError::ConnectionFailed(e.to_string()))?;
+
+        for device in devices.iter() {
+            let descriptor = device
+                .device_descriptor()
+                .map_err(|e| TransportError::ConnectionFailed(e.to_string()))?;
+
+            if descriptor.vendor_id() != vendor_id || descriptor.product_id() != product_id {
+                continue;
+            }
+
+            let config = device
+                .config_descriptor(0)
+                .map_err(|e| TransportError::ConnectionFailed(e.to_string()))?;
+            let candidates = config
+                .interfaces()
+                .flat_map(|interface| interface.descriptors())
+                .map(|descriptor| InterfaceCandidate {
+                    interface_number: descriptor.interface_number(),
+                    alternate_setting: descriptor.setting_number(),
+                    class_code: descriptor.class_code(),
+                    endpoints: descriptor
+                        .endpoint_descriptors()
+                        .map(|endpoint| EndpointAddress {
+                            address: endpoint.address(),
+                            direction: UsbDirection::from_rusb(endpoint.direction()),
+                            transfer_type: UsbTransferType::from_rusb(endpoint.transfer_type()),
+                        })
+                        .collect(),
+                })
+                .collect::<Vec<_>>();
+
+            let selected = select_interface_and_endpoints(&candidates)
+                .map_err(|e| TransportError::ConnectionFailed(e.to_string()))?;
+
+            let handle = device
+                .open()
+                .map_err(|e| TransportError::ConnectionFailed(e.to_string()))?;
+
+            #[cfg(not(target_os = "windows"))]
+            handle
+                .set_auto_detach_kernel_driver(true)
+                .map_err(|e| TransportError::ConnectionFailed(e.to_string()))?;
+            #[cfg(target_os = "windows")]
+            {
+                if let Err(e) = handle.set_auto_detach_kernel_driver(true) {
+                    if e != rusb::Error::NotSupported {
+                        return Err(TransportError::ConnectionFailed(e.to_string()).into());
+                    }
+                }
+            }
+
+            handle
+                .claim_interface(selected.interface_number)
+                .map_err(|e| TransportError::ConnectionFailed(e.to_string()))?;
+
+            if selected.alternate_setting != 0 {
+                handle
+                    .set_alternate_setting(selected.interface_number, selected.alternate_setting)
+                    .map_err(|e| TransportError::ConnectionFailed(e.to_string()))?;
+            }
+
+            let worker_tx = spawn_worker(WorkerState {
+                handle,
+                endpoint_out: selected.endpoint_out,
+                endpoint_in: selected.endpoint_in,
+                interface_number: selected.interface_number,
+                read_buffer: Vec::new(),
+            });
+
+            return Ok(Self {
+                worker_tx: Some(worker_tx),
+                timeout: Duration::from_millis(600),
+                connected: true,
+            });
+        }
+
+        Err(TransportError::ConnectionFailed("Device not found".to_string()).into())
+    }
+
+    fn worker_tx(&self) -> ErpcResult<mpsc::Sender<WorkerCommand>> {
+        self.worker_tx
+            .as_ref()
+            .cloned()
+            .ok_or_else(|| TransportError::Closed.into())
+    }
+}
+
+async fn await_reply<T>(receiver: oneshot::Receiver<ErpcResult<T>>, timeout: Duration) -> ErpcResult<T> {
+    let reply = receiver;
+    let delay = Delay::new(timeout);
+    pin_mut!(reply);
+    pin_mut!(delay);
+
+    match select(reply, delay).await {
+        Either::Left((result, _)) => {
+            result.map_err(|_| crate::ErpcError::from(TransportError::Closed))?
+        }
+        Either::Right((_, _)) => Err(TransportError::Timeout.into()),
+    }
+}
+
+#[async_trait]
+impl FramedTransport for RusbTransport {
+    async fn base_send(&mut self, data: &[u8]) -> ErpcResult<()> {
+        if !self.connected {
+            return Err(TransportError::Closed.into());
+        }
+
+        let worker_tx = self.worker_tx()?;
+        let (reply_tx, reply_rx) = oneshot::channel();
+        worker_tx
+            .send(WorkerCommand::Send {
+                data: data.to_vec(),
+                timeout: self.timeout,
+                reply: reply_tx,
+            })
+            .map_err(|_| TransportError::Closed)?;
+
+        await_reply(reply_rx, self.timeout + self.timeout).await
+    }
+
+    async fn base_receive(&mut self, length: usize) -> ErpcResult<Vec<u8>> {
+        if !self.connected {
+            return Err(TransportError::Closed.into());
+        }
+
+        let worker_tx = self.worker_tx()?;
+        let (reply_tx, reply_rx) = oneshot::channel();
+        worker_tx
+            .send(WorkerCommand::Receive {
+                length,
+                timeout: self.timeout,
+                reply: reply_tx,
+            })
+            .map_err(|_| TransportError::Closed)?;
+
+        await_reply(reply_rx, self.timeout + self.timeout).await
     }
 
     fn is_connected(&self) -> bool {
@@ -343,12 +436,18 @@ impl FramedTransport for RusbTransport {
     }
 
     async fn close(&mut self) -> ErpcResult<()> {
-        if self.connected {
-            self.connected = false;
-            self.endpoint_in = None;
-            self.endpoint_out = None;
-            self.interface = None;
-            self.read_buffer.clear();
+        if !self.connected {
+            return Ok(());
+        }
+
+        self.connected = false;
+
+        if let Some(worker_tx) = self.worker_tx.take() {
+            let (reply_tx, reply_rx) = oneshot::channel();
+            worker_tx
+                .send(WorkerCommand::Close { reply: reply_tx })
+                .map_err(|_| TransportError::Closed)?;
+            await_reply(reply_rx, self.timeout + self.timeout).await?;
         }
 
         Ok(())

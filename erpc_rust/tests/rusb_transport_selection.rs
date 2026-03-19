@@ -46,3 +46,34 @@ fn errors_when_vendor_interface_lacks_bulk_pair() {
 
     assert!(matches!(err, SelectionError::MissingBulkPair));
 }
+
+#[test]
+fn skips_non_vendor_interfaces_before_selecting_vendor_interface() {
+    let interfaces = vec![
+        InterfaceCandidate {
+            interface_number: 0,
+            alternate_setting: 0,
+            class_code: 0x03,
+            endpoints: vec![
+                EndpointAddress::bulk_in(0x81),
+                EndpointAddress::bulk_out(0x01),
+            ],
+        },
+        InterfaceCandidate {
+            interface_number: 4,
+            alternate_setting: 1,
+            class_code: 0xff,
+            endpoints: vec![
+                EndpointAddress::bulk_out(0x04),
+                EndpointAddress::bulk_in(0x85),
+            ],
+        },
+    ];
+
+    let selected = select_interface_and_endpoints(&interfaces).expect("should select vendor pair");
+
+    assert_eq!(selected.interface_number, 4);
+    assert_eq!(selected.alternate_setting, 1);
+    assert_eq!(selected.endpoint_in, 0x85);
+    assert_eq!(selected.endpoint_out, 0x04);
+}
