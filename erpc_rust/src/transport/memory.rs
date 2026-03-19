@@ -56,6 +56,11 @@ impl MemoryTransport {
     pub fn new() -> (Self, Self) {
         MemoryChannel::create_pair()
     }
+
+    /// Backward-compatible alias used by tests and examples.
+    pub fn pair() -> (Self, Self) {
+        Self::new()
+    }
 }
 
 #[async_trait]
