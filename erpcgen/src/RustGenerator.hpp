@@ -32,7 +32,7 @@ public:
      *
      * @param[in] def Contains all Symbols parsed from IDL files.
      */
-    explicit RustGenerator(InterfaceDefinition *def);
+    explicit RustGenerator(InterfaceDefinition *def, bool syncMode = false);
 
     /*!
      * @brief This function is destructor of RustGenerator class.
@@ -222,6 +222,7 @@ protected:
     std::string generateMemberWrite(StructMember *member, const std::string &memberName);
 
 private:
+    bool m_syncMode;                       /*!< Generate synchronous Rust bindings. */
     std::set<std::string> m_rustKeywords; /*!< Set of Rust keywords that need to be escaped. */
 
     /*!

@@ -11,14 +11,22 @@
 //
 
 
+{% if not syncMode %}
 use async_trait::async_trait;
+{% endif -- syncMode %}
 use erpc_rust::{
     auxiliary::{MessageInfo, MessageType},
     codec::{BasicCodec, BasicCodecFactory, Codec},
     error::SerializationError,
+{% if syncMode %}
+    server::blocking::{BlockingBaseService, BlockingMethodHandler, BlockingService},
+    transport::BlockingTransport,
+    BlockingClientManager, ErpcResult,
+{% else -- syncMode %}
     server::{BaseService, MethodHandler, Service},
     transport::Transport,
     ClientManager, ErpcResult,
+{% endif -- syncMode %}
 };
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
@@ -165,6 +173,14 @@ pub mod {$interface.moduleName} {
 
 {% if interface.generateServer %}
     /// Generated trait containing eRPC methods that should be implemented for use with {$interface.name}Server.
+{% if syncMode %}
+    pub trait {$interface.name}: Send + Sync + 'static {
+{% for function in interface.functions %}
+        {$function.comment}
+        fn {$function.name}(&self{$function.parameters}){$function.returnType};
+{% endfor -- functions %}
+    }
+{% else -- syncMode %}
     #[async_trait]
     pub trait {$interface.name}: Send + Sync + 'static {
 {% for function in interface.functions %}
@@ -172,6 +188,7 @@ pub mod {$interface.moduleName} {
         async fn {$function.name}(&self{$function.parameters}){$function.returnType};
 {% endfor -- functions %}
     }
+{% endif -- syncMode %}
 
     /// Server wrapper for {$interface.name} service
     pub struct {$interface.name}Server<T>
@@ -179,7 +196,11 @@ pub mod {$interface.moduleName} {
         T: {$interface.name},
     {
         inner: Arc<T>,
+{% if syncMode %}
+        base_service: BlockingBaseService,
+{% else -- syncMode %}
         base_service: BaseService,
+{% endif -- syncMode %}
     }
 
     impl<T> {$interface.name}Server<T>
@@ -206,8 +227,13 @@ pub mod {$interface.moduleName} {
             self.inner
         }
 
+{% if syncMode %}
+        fn create_base_service(service: &Arc<T>) -> BlockingBaseService {
+            let mut base_service = BlockingBaseService::new(ServiceId::{$interface.name}.as_u8());
+{% else -- syncMode %}
         fn create_base_service(service: &Arc<T>) -> BaseService {
             let mut base_service = BaseService::new(ServiceId::{$interface.name}.as_u8());
+{% endif -- syncMode %}
             
             // Register all method handlers
 {% for function in interface.functions %}
@@ -218,17 +244,29 @@ pub mod {$interface.moduleName} {
         }
 
 {% for function in interface.functions %}
+{% if syncMode %}
+        fn register_{$function.name}(base_service: &mut BlockingBaseService, service: Arc<T>) {
+{% else -- syncMode %}
         fn register_{$function.name}(base_service: &mut BaseService, service: Arc<T>) {
+{% endif -- syncMode %}
             struct {$function.handlerName}<T: {$interface.name}> {
                 service: Arc<T>,
             }
             
+{% if syncMode %}
+            impl<T: {$interface.name}> BlockingMethodHandler for {$function.handlerName}<T> {
+                fn handle(&self, sequence: u32, codec: &mut dyn Codec) -> ErpcResult<()> {
+{$function.serverHandlerCode}
+                }
+            }
+{% else -- syncMode %}
             #[async_trait]
             impl<T: {$interface.name}> MethodHandler for {$function.handlerName}<T> {
                 async fn handle(&self, sequence: u32, codec: &mut dyn Codec) -> ErpcResult<()> {
 {$function.serverHandlerCode}
                 }
             }
+{% endif -- syncMode %}
             
             base_service.add_method({$interface.name}Method::{$function.constName}.as_u8(), {$function.handlerName} { service });
         }
@@ -237,8 +275,12 @@ pub mod {$interface.moduleName} {
     }
 
     /// Implementation of Service trait for {$interface.name}Server
+{% if syncMode %}
+    impl<T> BlockingService for {$interface.name}Server<T>
+{% else -- syncMode %}
     #[async_trait]
     impl<T> Service for {$interface.name}Server<T>
+{% endif -- syncMode %}
     where
         T: {$interface.name},
     {
@@ -246,6 +288,16 @@ pub mod {$interface.moduleName} {
             self.base_service.service_id()
         }
 
+{% if syncMode %}
+        fn handle_invocation(
+            &self,
+            method_id: u8,
+            sequence: u32,
+            codec: &mut dyn Codec,
+        ) -> ErpcResult<()> {
+            self.base_service.handle_invocation(method_id, sequence, codec)
+        }
+{% else -- syncMode %}
         async fn handle_invocation(
             &self,
             method_id: u8,
@@ -254,6 +306,7 @@ pub mod {$interface.moduleName} {
         ) -> ErpcResult<()> {
             self.base_service.handle_invocation(method_id, sequence, codec).await
         }
+{% endif -- syncMode %}
 
         fn supported_methods(&self) -> Vec<u8> {
             self.base_service.supported_methods()
@@ -265,18 +318,34 @@ pub mod {$interface.moduleName} {
     /// Client implementation for {$interface.name}
     pub struct {$interface.name}Client<'a, T>
     where
+{% if syncMode %}
+        T: BlockingTransport,
+{% else -- syncMode %}
         T: Transport,
+{% endif -- syncMode %}
     {
+{% if syncMode %}
+        client: &'a mut BlockingClientManager<T, BasicCodecFactory>,
+{% else -- syncMode %}
         client: &'a mut ClientManager<T, BasicCodecFactory>,
+{% endif -- syncMode %}
     }
 
     /// {$interface.name} client implementation
     /// Matches eRPC IDL interface exactly with proper serialization
     impl<'a, T> {$interface.name}Client<'a, T>
     where
+{% if syncMode %}
+        T: BlockingTransport,
+{% else -- syncMode %}
         T: Transport,
+{% endif -- syncMode %}
     {
+{% if syncMode %}
+        pub fn new(client_manager: &'a mut BlockingClientManager<T, BasicCodecFactory>) -> Self {
+{% else -- syncMode %}
         pub fn new(client_manager: &'a mut ClientManager<T, BasicCodecFactory>) -> Self {
+{% endif -- syncMode %}
             Self {
                 client: client_manager,
             }
@@ -284,7 +353,11 @@ pub mod {$interface.moduleName} {
 
 {% for function in interface.functions %}
         {$function.comment}
+{% if syncMode %}
+        pub fn {$function.name}(&mut self{$function.clientParameters}){$function.clientReturnType} {
+{% else -- syncMode %}
         pub async fn {$function.name}(&mut self{$function.clientParameters}){$function.clientReturnType} {
+{% endif -- syncMode %}
             {$function.clientMethodCode}
         }
 

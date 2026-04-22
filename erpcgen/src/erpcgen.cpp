@@ -73,6 +73,7 @@ Available languages (use with -g option):\n\
   py   Python\n\
   java Java\n\
   rust Rust\n\
+  rust-sync Rust (synchronous blocking API)\n\
 \n\
 Available codecs (use with --c option):\n\
   basic   BasicCodec\n\
@@ -106,6 +107,7 @@ protected:
         kPythonLanguage,
         kJavaLanguage,
         kRustLanguage,
+        kRustSyncLanguage,
     }; /*!< Generated outputs format. */
 
     typedef vector<string> string_vector_t; /*!< Vector of positional arguments. */
@@ -224,6 +226,10 @@ public:
                     else if (lang == "rust")
                     {
                         m_outputLanguage = languages_t::kRustLanguage;
+                    }
+                    else if (lang == "rust-sync" || lang == "rust-blocking")
+                    {
+                        m_outputLanguage = languages_t::kRustSyncLanguage;
                     }
                     else
                     {
@@ -362,6 +368,11 @@ public:
                 case languages_t::kRustLanguage:
                 {
                     RustGenerator(&def).generate();
+                    break;
+                }
+                case languages_t::kRustSyncLanguage:
+                {
+                    RustGenerator(&def, true).generate();
                     break;
                 }
             }

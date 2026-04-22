@@ -23,6 +23,24 @@ pub trait Transport: Send + Sync {
     fn set_timeout(&mut self, timeout: Duration);
 }
 
+/// Blocking transport trait for low-latency synchronous communication.
+pub trait BlockingTransport: Send + Sync {
+    /// Send data through the transport.
+    fn send(&mut self, data: &[u8]) -> ErpcResult<()>;
+
+    /// Receive one complete framed message.
+    fn receive(&mut self) -> ErpcResult<Vec<u8>>;
+
+    /// Close the transport.
+    fn close(&mut self) -> ErpcResult<()>;
+
+    /// Check if transport is connected.
+    fn is_connected(&self) -> bool;
+
+    /// Set timeout for operations.
+    fn set_timeout(&mut self, timeout: Duration);
+}
+
 /// Transport factory trait for creating transport instances
 #[async_trait]
 pub trait TransportFactory: Send + Sync {
@@ -32,6 +50,8 @@ pub trait TransportFactory: Send + Sync {
     async fn create(&self) -> ErpcResult<Self::Transport>;
 }
 
+pub mod blocking_framed;
+pub mod blocking_memory;
 pub mod framed;
 pub mod memory;
 pub mod rusb;
@@ -49,5 +69,7 @@ pub use serial::SerialTransport;
 #[cfg(unix)]
 pub use socket::SocketTransport;
 
+pub use blocking_framed::BlockingFramedTransport;
+pub use blocking_memory::BlockingMemoryTransport;
 pub use framed::FramedTransport;
 pub use memory::MemoryTransport;

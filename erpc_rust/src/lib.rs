@@ -35,6 +35,7 @@
 #![allow(dead_code)]
 
 pub mod auxiliary;
+pub mod blocking_client;
 pub mod client;
 pub mod codec;
 pub mod error;
@@ -43,13 +44,18 @@ pub mod transport;
 
 // Re-export commonly used types
 pub use auxiliary::{MessageInfo, MessageType, RequestContext};
+pub use blocking_client::BlockingClientManager;
 pub use client::ClientManager;
 pub use codec::{BasicCodec, BasicCodecFactory, Codec};
 pub use error::{ErpcError, ErpcResult};
+pub use server::blocking::{
+    BlockingBaseService, BlockingFunctionHandler, BlockingMethodHandler, BlockingServer,
+    BlockingServerBuilder, BlockingService, BlockingSimpleServer,
+};
 pub use server::{
     MultiTransportServer, MultiTransportServerBuilder, Server, Service, SimpleServer,
 };
-pub use transport::{FramedTransport, Transport};
+pub use transport::{BlockingFramedTransport, BlockingTransport, FramedTransport, Transport};
 
 #[cfg(feature = "tcp")]
 pub use transport::TcpTransport;

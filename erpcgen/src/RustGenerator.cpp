@@ -35,11 +35,13 @@ extern const char *const kRustTemplate;
 // Code
 ////////////////////////////////////////////////////////////////////////////////
 
-RustGenerator::RustGenerator(InterfaceDefinition *def) : Generator(def, generator_type_t::kRust)
+RustGenerator::RustGenerator(InterfaceDefinition *def, bool syncMode) :
+Generator(def, generator_type_t::kRust), m_syncMode(syncMode)
 {
     /* Set copyright rules. */
     m_templateData["erpcVersion"] = ERPC_VERSION;
     m_templateData["todaysDate"] = getTime();
+    m_templateData["syncMode"] = m_syncMode;
 
     initRustKeywords();
 }
@@ -957,8 +959,12 @@ std::string RustGenerator::generateClientRequestSerialization(Function *fn, cons
     requestCode << "                    " << interfaceMethodId << ".as_u8(),\n";
     requestCode << "                    " << (fn->isOneway() ? "true" : "false") << ",\n";
     requestCode << "                    request_data\n";
-    requestCode << "                )\n";
-    requestCode << "                .await?;\n";
+    requestCode << "                )";
+    if (!m_syncMode)
+    {
+        requestCode << "\n                .await";
+    }
+    requestCode << "?;\n";
 
     return requestCode.str();
 }
@@ -1877,7 +1883,12 @@ std::string RustGenerator::generateOnewayServerHandler(Function *fn, const std::
     // Generate method call with parameters
     serverHandlerCode << "                    let _ = self.service." << toSnakeCase(fn->getName()) << "(";
     serverHandlerCode << generateMethodCallParameters(fn, lengthParams);
-    serverHandlerCode << ").await;\n";
+    serverHandlerCode << ")";
+    if (!m_syncMode)
+    {
+        serverHandlerCode << ".await";
+    }
+    serverHandlerCode << ";\n";
     serverHandlerCode << "                    Ok(())";
 
     return serverHandlerCode.str();
@@ -1902,7 +1913,12 @@ std::string RustGenerator::generateRegularServerHandler(Function *fn, const std:
     // Generate method call with parameters
     serverHandlerCode << "                    let result = self.service." << toSnakeCase(fn->getName()) << "(";
     serverHandlerCode << generateMethodCallParameters(fn, lengthParams);
-    serverHandlerCode << ").await;\n";
+    serverHandlerCode << ")";
+    if (!m_syncMode)
+    {
+        serverHandlerCode << ".await";
+    }
+    serverHandlerCode << ";\n";
 
     // Check if there are any response parameters to serialize
     DataType *returnType = fn->getReturnType();

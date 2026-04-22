@@ -11,6 +11,8 @@ use tokio::sync::mpsc;
 use tokio::sync::RwLock;
 use tracing::{debug, error, info, warn};
 
+pub mod blocking;
+
 /// Server trait for handling eRPC requests
 #[async_trait]
 pub trait Server {

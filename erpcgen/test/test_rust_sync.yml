@@ -1,0 +1,26 @@
+---
+name: rust_sync_generation
+desc: verify rust-sync emits non-async client and server bindings
+idl: |
+  interface echo {
+    ping(in string message) -> string
+    oneway notify(in uint32 value)
+  }
+lang: rust-sync
+test.rs:
+  - "use erpc_rust::{"
+  - "server::blocking::{BlockingBaseService, BlockingMethodHandler, BlockingService},"
+  - "transport::BlockingTransport,"
+  - "BlockingClientManager, ErpcResult,"
+  - "pub trait echo: Send + Sync + 'static {"
+  - "fn ping(&self, message: &str) -> Result<String, Box<dyn std::error::Error + Send + Sync>>;"
+  - "fn notify(&self, value: u32) -> Result<(), Box<dyn std::error::Error + Send + Sync>>;"
+  - "impl<T: echo> BlockingMethodHandler for PingHandler<T> {"
+  - "fn handle(&self, sequence: u32, codec: &mut dyn Codec) -> ErpcResult<()> {"
+  - "let result = self.service.ping(&message);"
+  - "impl<T> BlockingService for echoServer<T>"
+  - "pub fn ping(&mut self, message: &str) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {"
+  - ".perform_request("
+  - not: "async fn"
+  - not: ".await"
+  - not: "async_trait"
