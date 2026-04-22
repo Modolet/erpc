@@ -25,6 +25,10 @@ Matrix multiply example demonstrates usage of eRPC between two PC's or boards (e
 
 Java version of the Python Matrix multiply example
 
+## [`rust_sync_complex/`](rust_sync_complex/)
+
+Rust `rust-sync` example with blocking client/server implementations generated from a complex IDL. The local demo uses in-memory blocking transport and covers nested structs, lists, binary payloads, `out` parameters, and oneway calls.
+
 ## [`matrix_multiply_tcp_c/`](matrix_multiply_tcp_c/)
 
 C/C++ version of the Python Matrix multiply example using TCP transport layer

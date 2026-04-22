@@ -1,0 +1,38 @@
+enum SensorKind {
+  Temperature = 1,
+  Pressure = 2,
+  Voltage = 3
+}
+
+enum StatusCode {
+  Ok = 0,
+  NotFound = 1,
+  Invalid = 2
+}
+
+struct Reading {
+  uint32 id
+  SensorKind kind
+  float value
+  uint64 timestamp
+}
+
+struct Calibration {
+  string operator_name
+  list<float> offsets
+  binary certificate
+}
+
+struct DeviceReport {
+  string device_id
+  list<Reading> readings
+  Calibration calibration
+  uint32 sequence
+}
+
+interface Telemetry {
+  submitReport(DeviceReport report) -> StatusCode
+  fetchReadings(in string device_id, in list<SensorKind> kinds, out list<Reading> readings) -> StatusCode
+  calibrate(in string device_id, in Calibration calibration) -> DeviceReport
+  oneway publishHeartbeat(in string device_id, in uint64 timestamp)
+}

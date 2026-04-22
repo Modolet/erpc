@@ -1,0 +1,11 @@
+[package]
+name = "erpc_rust_sync_complex_example"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[workspace]
+
+[dependencies]
+erpc_rust = { path = "../../erpc_rust" }
+serde = { version = "1.0", features = ["derive"] }
