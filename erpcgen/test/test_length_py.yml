@@ -1,4 +1,31 @@
 ---
+name: out binary with in length
+desc: verify out binary keeps explicit input length in python client and server
+idl: |
+  enum OisAxis {
+    kOisAxisX = 0
+  }
+
+  enum OisErrorCode {
+    kOisErrorOk = 0
+  }
+
+  interface sis7900 {
+    ois_sis7900_read_reg(in OisAxis axis, in uint8 reg, out binary val @length(length), in uint16 length) -> OisErrorCode
+  }
+lang: py
+test/interface.py:
+  - def ois_sis7900_read_reg(self, axis, reg, val, length)
+test/client.py:
+  - def ois_sis7900_read_reg(self, axis, reg, val, length)
+  - codec.write_uint16(length)
+  - val.value = codec.read_binary()
+test/server.py:
+  - length = codec.read_uint16()
+  - self._handler.ois_sis7900_read_reg(axis, reg, val, length)
+  - codec.write_binary(val.value)
+
+---
 name: in list param
 desc: verify in list params with @length
 idl: |

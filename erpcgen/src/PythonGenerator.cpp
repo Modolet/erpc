@@ -24,6 +24,25 @@ using namespace erpcgen;
 using namespace cpptempl;
 using namespace std;
 
+static bool isRequestParam(param_direction_t direction)
+{
+    return direction == param_direction_t::kInDirection || direction == param_direction_t::kInoutDirection;
+}
+
+static bool isResponseParam(param_direction_t direction)
+{
+    return direction == param_direction_t::kOutDirection || direction == param_direction_t::kInoutDirection;
+}
+
+static bool isSerializedViaLengthMember(StructMember *param, StructMember *referencedFrom)
+{
+    param_direction_t paramDirection = param->getDirection();
+    param_direction_t referencedDirection = referencedFrom->getDirection();
+
+    return (isRequestParam(paramDirection) && isRequestParam(referencedDirection)) ||
+           (isResponseParam(paramDirection) && isResponseParam(referencedDirection));
+}
+
 // Templates strings converted from text files by txt_to_c.py.
 extern const char *const kPyCoders;
 extern const char *const kPyInit;
@@ -211,8 +230,9 @@ data_map PythonGenerator::getFunctionTemplateData(Group *group, Function *fn)
         // These prevent to serialized data twice.
         StructMember *referencedFrom = findParamReferencedFromAnn(fnParams, name, LENGTH_ANNOTATION);
         paramInfo["discriminatorForMember"] = "";
+        bool serializedViaLengthMember = referencedFrom && isSerializedViaLengthMember(param, referencedFrom);
 
-        if (referencedFrom)
+        if (serializedViaLengthMember)
         {
             paramInfo["lengthForMember"] = getOutputName(referencedFrom);
         }
@@ -228,7 +248,7 @@ data_map PythonGenerator::getFunctionTemplateData(Group *group, Function *fn)
             }
         }
 
-        paramInfo["serializedViaMember"] = (referencedFrom) ? getOutputName(referencedFrom) : "";
+        paramInfo["serializedViaMember"] = referencedFrom ? getOutputName(referencedFrom) : "";
 
         /* Necessary for handling non-discriminated unions */
         paramInfo["discriminator"] = getAnnStringValue(param, DISCRIMINATOR_ANNOTATION);
@@ -293,7 +313,8 @@ string PythonGenerator::getFunctionPrototype(Group *group, FunctionBase *fn, con
         for (auto it : params)
         {
             // Skip data serialization for variables placed as @length value for lists.
-            if (findParamReferencedFromAnn(params, getOutputName(it), LENGTH_ANNOTATION))
+            StructMember *referencedFrom = findParamReferencedFromAnn(params, getOutputName(it), LENGTH_ANNOTATION);
+            if (referencedFrom && isSerializedViaLengthMember(it, referencedFrom))
             {
                 continue;
             }
