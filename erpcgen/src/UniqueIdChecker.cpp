@@ -39,14 +39,7 @@ void UniqueIdChecker::makeIdsUnique(InterfaceDefinition &def)
         {
             setInterfaceId(interface, interfaceId);
         }
-        initUsedFunctionIds(interface);
-        for (auto function : interface->getFunctions())
-        {
-            if (Annotation *functionId = function->findAnnotation(ID_ANNOTATION, Annotation::program_lang_t::kAll))
-            {
-                setFunctionId(function, functionId);
-            }
-        }
+        assignFunctionIds(interface);
         if (0 < m_usedFunctionIds.size())
         {
             checkDuplicateIds(m_usedFunctionIds, "function");
@@ -71,17 +64,44 @@ void UniqueIdChecker::initUsedInterfaceIds(SymbolScope::symbol_vector_t ifaces)
     }
 }
 
-void UniqueIdChecker::initUsedFunctionIds(Interface *iface)
+void UniqueIdChecker::assignFunctionIds(Interface *iface)
 {
     m_usedFunctionIds.clear();
     Interface::function_vector_t functions = iface->getFunctions();
-    if (0 < functions.size())
+
+    for (auto function : functions)
     {
-        for (unsigned int i = 0; i < functions.size(); ++i)
+        if (Annotation *functionId = function->findAnnotation(ID_ANNOTATION, Annotation::program_lang_t::kAll))
         {
-            m_usedFunctionIds.push_back(make_pair(functions[i]->getUniqueId(), functions[i]->getName()));
+            setFunctionId(function, functionId);
         }
     }
+
+    uint32_t nextId = 1;
+    for (auto function : functions)
+    {
+        if (!function->findAnnotation(ID_ANNOTATION, Annotation::program_lang_t::kAll))
+        {
+            while (isFunctionIdUsed(nextId))
+            {
+                ++nextId;
+            }
+            if (nextId > 0xffU)
+            {
+                throw semantic_error(format_string("No available @id value for function %s; function ids must be in "
+                                                   "range 1..255\n",
+                                                   function->getName().c_str()));
+            }
+            function->setUniqueId(nextId);
+            m_usedFunctionIds.push_back(make_pair(nextId, function->getName()));
+        }
+    }
+}
+
+bool UniqueIdChecker::isFunctionIdUsed(uint32_t id) const
+{
+    return any_of(m_usedFunctionIds.begin(), m_usedFunctionIds.end(),
+                  [id](const idAndName_t &usedId) { return static_cast<uint32_t>(usedId.first) == id; });
 }
 
 void UniqueIdChecker::setInterfaceId(Interface *iface, Annotation *interfaceId)
@@ -98,6 +118,11 @@ void UniqueIdChecker::setInterfaceId(Interface *iface, Annotation *interfaceId)
         {
             throw semantic_error(
                 format_string("@id value for interface %s must be greater than zero", iface->getName().c_str()));
+        }
+        if (newIdValue > 0xffU)
+        {
+            throw semantic_error(format_string("@id value for interface %s must be in range 0..255",
+                                               iface->getName().c_str()));
         }
         iface->setUniqueId(newIdValue);
         for (unsigned int i = 0; i < m_usedInterfaceIds.size(); ++i)
@@ -127,23 +152,12 @@ void UniqueIdChecker::setFunctionId(Function *fn, Annotation *idAnnotation)
             throw semantic_error(
                 format_string("@id value for function %s must be greater than zero", fn->getName().c_str()));
         }
+        if (newIdValue > 0xffU)
+        {
+            throw semantic_error(
+                format_string("@id value for function %s must be in range 1..255", fn->getName().c_str()));
+        }
         fn->setUniqueId(newIdValue);
-        /*
-        for(int i=0; i < usedFunctionIds.size(); ++i)
-        {
-            printf("%d: <id: %d, name: %s>\n",i, usedFunctionIds[i].first, usedFunctionIds[i].second.c_str());
-        }
-        */
-        for (unsigned int i = 0; i < m_usedFunctionIds.size(); ++i)
-        {
-            //    printf("usedFunctionIds at i: %s\t", usedFunctionIds[i].second.c_str());
-            //   printf("fn name: %s\n", fn->getName().c_str());
-            if (0 == m_usedFunctionIds[i].second.compare(fn->getName()))
-            {
-                m_usedFunctionIds.erase(m_usedFunctionIds.begin() + i);
-                break;
-            }
-        }
         m_usedFunctionIds.push_back(make_pair(newIdValue, fn->getName()));
     }
 }

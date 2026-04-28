@@ -117,3 +117,7 @@ __repo__/
 
 .direnv
 flake.lock
+
+# Rust build output
+/target/*
+!/target/CACHEDIR.TAG

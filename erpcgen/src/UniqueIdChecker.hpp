@@ -49,11 +49,18 @@ private:
     void initUsedInterfaceIds(SymbolScope::symbol_vector_t ifaces);
 
     /*!
-     * @brief This function will go through interface functions and set initial value of id number.
+     * @brief Assign explicit and implicit function ids within one interface.
      *
      * @param[in] iface Interface.
      */
-    void initUsedFunctionIds(Interface *iface);
+    void assignFunctionIds(Interface *iface);
+
+    /*!
+     * @brief Check whether a function id is already used in the current interface.
+     *
+     * @param[in] id Function id.
+     */
+    bool isFunctionIdUsed(uint32_t id) const;
 
     /*!
      * @brief This helper function sets a function symbol's unique id from the specified annotation.

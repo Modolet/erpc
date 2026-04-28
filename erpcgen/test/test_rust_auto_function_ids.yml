@@ -1,0 +1,27 @@
+---
+name: auto_function_ids_per_interface
+desc: verify implicit function ids are assigned per interface and avoid explicit ids
+idl: |
+  interface first {
+    @id(3)
+    explicit_three() -> int32
+    implicit_one() -> int32
+    implicit_two() -> int32
+  }
+
+  interface second {
+    implicit_one() -> int32
+    @id(3)
+    explicit_three() -> int32
+    implicit_two() -> int32
+  }
+lang: rust
+test.rs:
+  - "pub enum firstMethod {"
+  - "ExplicitThree = 3,"
+  - "ImplicitOne = 1,"
+  - "ImplicitTwo = 2,"
+  - "pub enum secondMethod {"
+  - "ImplicitOne = 1,"
+  - "ExplicitThree = 3,"
+  - "ImplicitTwo = 2,"
