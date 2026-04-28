@@ -63,6 +63,20 @@ async fn test_message_header_round_trip() {
 }
 
 #[tokio::test]
+async fn test_null_flag_uses_c_basic_codec_wire_format() {
+    let mut codec = BasicCodec::new();
+
+    codec.write_null_flag(true).unwrap();
+    codec.write_uint32(0x11223344).unwrap();
+
+    assert_eq!(codec.as_bytes(), &[1, 0x44, 0x33, 0x22, 0x11]);
+
+    let mut read_codec = BasicCodec::from_data(vec![0, 0x88, 0x77, 0x66, 0x55]);
+    assert_eq!(read_codec.read_null_flag().unwrap(), false);
+    assert_eq!(read_codec.read_uint32().unwrap(), 0x55667788);
+}
+
+#[tokio::test]
 async fn test_client_context() {
     use erpc_rust::{
         client::ClientManager, codec::BasicCodecFactory, transport::memory::MemoryTransport,

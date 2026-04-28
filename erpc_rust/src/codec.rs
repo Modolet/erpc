@@ -300,7 +300,7 @@ impl Codec for BasicCodec {
     }
 
     fn write_null_flag(&mut self, value: bool) -> ErpcResult<()> {
-        self.write_uint32(if value { 1 } else { 0 })
+        self.write_uint8(if value { 1 } else { 0 })
     }
 
     fn start_read_message(&mut self) -> ErpcResult<MessageInfo> {
@@ -417,7 +417,7 @@ impl Codec for BasicCodec {
     }
 
     fn read_null_flag(&mut self) -> ErpcResult<bool> {
-        let value = self.read_uint32()?;
+        let value = self.read_uint8()?;
         Ok(value != 0)
     }
 }
