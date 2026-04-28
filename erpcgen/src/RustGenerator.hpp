@@ -268,6 +268,17 @@ private:
     std::string getDefaultValue(DataType *dataType);
 
     /*!
+     * @brief This function returns if an iterator item should be dereferenced
+     * before writing it to the codec.
+     *
+     * @param[in] dataType Given iterator element type.
+     *
+     * @retval true Iterator item should be dereferenced.
+     * @retval false Iterator item should be passed by reference.
+     */
+    bool shouldDereferenceIteratorItem(DataType *dataType);
+
+    /*!
      * @brief This function determines the optimal Rust repr type for an enum
      * based on its values.
      *

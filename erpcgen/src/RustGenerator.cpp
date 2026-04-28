@@ -589,6 +589,40 @@ bool RustGenerator::isStringType(DataType *dataType)
     return false;
 }
 
+bool RustGenerator::shouldDereferenceIteratorItem(DataType *dataType)
+{
+    if (!dataType)
+    {
+        return false;
+    }
+
+    if (dataType->getDataType() == DataType::data_type_t::kAliasType)
+    {
+        AliasType *aliasType = dynamic_cast<AliasType *>(dataType);
+        return shouldDereferenceIteratorItem(aliasType->getElementType());
+    }
+
+    if (dataType->getDataType() == DataType::data_type_t::kEnumType)
+    {
+        return true;
+    }
+
+    if (dataType->getDataType() != DataType::data_type_t::kBuiltinType)
+    {
+        return false;
+    }
+
+    BuiltinType *builtinType = dynamic_cast<BuiltinType *>(dataType);
+    switch (builtinType->getBuiltinType())
+    {
+        case BuiltinType::builtin_type_t::kStringType:
+        case BuiltinType::builtin_type_t::kBinaryType:
+            return false;
+        default:
+            return true;
+    }
+}
+
 param_direction_t RustGenerator::getDirection(StructMember *param)
 {
     // Check for direction annotations
@@ -804,13 +838,8 @@ std::string RustGenerator::generateMemberWrite(StructMember *member, const std::
             string code = "codec.start_write_list(" + memberName + ".len() as u32)?;\n";
             code += "        for item in &" + memberName + " {\n";
 
-            // Check if we need to dereference (for primitive types) or not (for
-            // structs)
             string itemRef = "item";
-            if (elementType->getDataType() == DataType::data_type_t::kBuiltinType ||
-                (elementType->getDataType() == DataType::data_type_t::kAliasType &&
-                 dynamic_cast<AliasType *>(elementType)->getElementType()->getDataType() ==
-                     DataType::data_type_t::kBuiltinType))
+            if (shouldDereferenceIteratorItem(elementType))
             {
                 itemRef = "*item";
             }
@@ -826,12 +855,8 @@ std::string RustGenerator::generateMemberWrite(StructMember *member, const std::
 
             string code = "for (i, item) in " + memberName + ".iter().enumerate() {\n";
 
-            // Check if we need to dereference (for primitive types) or not (for structs)
             string itemRef = "item";
-            if (elementType->getDataType() == DataType::data_type_t::kBuiltinType ||
-                (elementType->getDataType() == DataType::data_type_t::kAliasType &&
-                 dynamic_cast<AliasType *>(elementType)->getElementType()->getDataType() ==
-                     DataType::data_type_t::kBuiltinType))
+            if (shouldDereferenceIteratorItem(elementType))
             {
                 itemRef = "*item";
             }
@@ -1571,13 +1596,8 @@ std::string RustGenerator::generateTypeWrite(DataType *dataType, const std::stri
         code << "codec.start_write_list(" << variableName << ".len() as u32)?;\n";
         code << "                            for item in &" << variableName << " {\n";
 
-        // Check if we need to dereference (for primitive types) or not (for
-        // structs)
         string itemRef = "item";
-        if (elementType->getDataType() == DataType::data_type_t::kBuiltinType ||
-            (elementType->getDataType() == DataType::data_type_t::kAliasType &&
-             dynamic_cast<AliasType *>(elementType)->getElementType()->getDataType() ==
-                 DataType::data_type_t::kBuiltinType))
+        if (shouldDereferenceIteratorItem(elementType))
         {
             itemRef = "*item";
         }
@@ -1593,12 +1613,8 @@ std::string RustGenerator::generateTypeWrite(DataType *dataType, const std::stri
 
         code << "for (i, item) in " << variableName << ".iter().enumerate() {\n";
 
-        // Check if we need to dereference (for primitive types) or not (for structs)
         string itemRef = "item";
-        if (elementType->getDataType() == DataType::data_type_t::kBuiltinType ||
-            (elementType->getDataType() == DataType::data_type_t::kAliasType &&
-             dynamic_cast<AliasType *>(elementType)->getElementType()->getDataType() ==
-                 DataType::data_type_t::kBuiltinType))
+        if (shouldDereferenceIteratorItem(elementType))
         {
             itemRef = "*item";
         }

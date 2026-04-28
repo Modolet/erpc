@@ -1,0 +1,21 @@
+---
+name: return_enum_list
+desc: verify rust server serializes returned enum lists by value, not by reference
+idl: |
+  enum OisDeviceType {
+    OIS_SIS7500
+    OIS_EVM
+    OIS_SIS7900_DBG
+  }
+
+  interface siois {
+    @id(0x01)
+    get_device_type() -> list<OisDeviceType>
+  }
+lang: rust
+test.rs:
+  - "pub async fn get_device_type(&mut self) -> Result<Vec<OisDeviceType>, Box<dyn std::error::Error + Send + Sync>>"
+  - "codec.start_write_list(response.len() as u32)?;"
+  - "for item in &response {"
+  - "codec.write_int32(*item as i32)?;"
+  - not: "codec.write_int32(item as i32)?;"
