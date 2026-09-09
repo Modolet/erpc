@@ -24,9 +24,9 @@ using namespace erpcgen;
 using namespace std;
 
 #if __WIN32__
-#define PATH_SEP_CHAR '\\'
+#define PATH_SEP_CHARS "\\/"
 #else
-#define PATH_SEP_CHAR '/'
+#define PATH_SEP_CHARS "/"
 #endif
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -215,10 +215,10 @@ CurrentFileInfo *ErpcLexer::openFile(const string &fileName)
         throw runtime_error(format_string("could not find input file %s in defined directories", fileName.c_str()));
     }
 
-    if (fileName.rfind(PATH_SEP_CHAR) != string::npos)
+    const size_t file_sep_pos = foundFile.find_last_of(PATH_SEP_CHARS);
+    if (file_sep_pos != string::npos)
     {
-        int fileSepPos = foundFile.rfind(PATH_SEP_CHAR);
-        currentFolderPath = foundFile.substr(0, fileSepPos);
+        currentFolderPath = foundFile.substr(0, file_sep_pos);
         PathSearcher::getGlobalSearcher().setTempPath(currentFolderPath);
     }
     else
