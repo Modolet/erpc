@@ -325,21 +325,11 @@ private:
      * @brief This function generates code to read a single output parameter.
      *
      * @param[in] paramType Type of the output parameter.
-     * @param[in] paramIndex Index of the parameter (for naming).
+     * @param[in] paramName Name of the output parameter.
      *
      * @return String with output parameter read code.
      */
     std::string generateOutParamRead(DataType *paramType, const std::string &paramName);
-
-    /*!
-     * @brief This function determines the appropriate codec name for a data type.
-     *
-     * @param[in] dataType Type to determine codec name for.
-     * @param[in] baseCodecName Base codec variable name.
-     *
-     * @return String with appropriate codec reference.
-     */
-    std::string getCodecNameForType(DataType *dataType, const std::string &baseCodecName);
 
     /*!
      * @brief This function generates server-side parameter deserialization code.

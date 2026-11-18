@@ -698,40 +698,21 @@ std::string RustGenerator::generateTypeRead(DataType *dataType, const std::strin
         case DataType::data_type_t::kBuiltinType:
         {
             BuiltinType *builtinType = dynamic_cast<BuiltinType *>(dataType);
-            string mutCodecName = codecName;
-            // Only add &mut for response_codec, not for codec parameter which is
-            // already &mut
-            if (mutCodecName == "response_codec")
-            {
-                mutCodecName = "(&mut " + mutCodecName + ")";
-            }
-            return generateBuiltinTypeRead(builtinType, mutCodecName);
+            return generateBuiltinTypeRead(builtinType, codecName);
         }
         case DataType::data_type_t::kStructType:
         case DataType::data_type_t::kEnumType:
         {
-            string mutCodecName = codecName;
-            // Only add &mut for response_codec, not for codec parameter which is
-            // already &mut
-            if (mutCodecName == "response_codec")
-            {
-                mutCodecName = "(&mut " + mutCodecName + ")";
-            }
-            return escapeKeyword(dataType->getName()) + "::read(" + mutCodecName + ")";
+            // The client owns its response codec. Server handlers and struct readers already borrow theirs.
+            string codecArg = codecName == "response_codec" ? "&mut " + codecName : codecName;
+            return escapeKeyword(dataType->getName()) + "::read(" + codecArg + ")";
         }
         case DataType::data_type_t::kArrayType:
         {
             ArrayType *arrayType = dynamic_cast<ArrayType *>(dataType);
             DataType *elementType = arrayType->getElementType();
             uint32_t elementCount = arrayType->getElementCount();
-            string mutCodecName = codecName;
-            // Only add &mut for response_codec, not for codec parameter which is
-            // already &mut
-            if (mutCodecName == "response_codec")
-            {
-                mutCodecName = "(&mut " + mutCodecName + ")";
-            }
-            string elementRead = generateTypeRead(elementType, mutCodecName);
+            string elementRead = generateTypeRead(elementType, codecName);
             return string("(|| -> ErpcResult<[_; ") + to_string(elementCount) + "]> {\n" +
                    "                        let mut array = [" + getTypeString(elementType) + "::default(); " + to_string(elementCount) + "];\n" +
                    "                        for i in array.iter_mut() {\n" +
@@ -743,15 +724,8 @@ std::string RustGenerator::generateTypeRead(DataType *dataType, const std::strin
         case DataType::data_type_t::kListType:
         {
             ListType *listType = dynamic_cast<ListType *>(dataType);
-            string mutCodecName = codecName;
-            // Only add &mut for response_codec, not for codec parameter which is
-            // already &mut
-            if (mutCodecName == "response_codec")
-            {
-                mutCodecName = "(&mut " + mutCodecName + ")";
-            }
             string elementRead = generateTypeRead(listType->getElementType(), codecName);
-            return string("(|| -> ErpcResult<Vec<_>> {\n") + "                        let list_len = " + mutCodecName +
+            return string("(|| -> ErpcResult<Vec<_>> {\n") + "                        let list_len = " + codecName +
                    ".start_read_list()?;\n" + "                        let mut list = Vec::new();\n" +
                    "                        for _ in 0..list_len {\n" + "                            list.push(" +
                    elementRead + "?);\n" + "                        }\n" + "                        Ok(list)\n" +
@@ -1089,8 +1063,7 @@ std::string RustGenerator::generateClientResponseDeserialization(Function *fn,
         }
 
         // Then read return value
-        responseCode << "            let return_value = " << generateTypeRead(returnType, "&mut response_codec")
-                     << "?;\n";
+        responseCode << "            let return_value = " << generateTypeRead(returnType, "response_codec") << "?;\n";
 
         writeLengthAssignments(responseCode);
 
@@ -1166,34 +1139,7 @@ std::string RustGenerator::generateClientResponseDeserialization(Function *fn,
 
 std::string RustGenerator::generateOutParamRead(DataType *paramType, const std::string &paramName)
 {
-    std::ostringstream outParamCode;
-
-    string codecName = getCodecNameForType(paramType, "response_codec");
-    string readCode = generateTypeRead(paramType, codecName);
-
-    if (paramType->getDataType() == DataType::data_type_t::kListType)
-    {
-        outParamCode << "            let " << paramName << " = " << readCode << "?;\n";
-    }
-    else
-    {
-        outParamCode << "            let " << paramName << " = " << readCode << "?;\n";
-    }
-
-    return outParamCode.str();
-}
-
-std::string RustGenerator::getCodecNameForType(DataType *dataType, const std::string &baseCodecName)
-{
-    if (dataType->getDataType() == DataType::data_type_t::kStructType ||
-        dataType->getDataType() == DataType::data_type_t::kEnumType)
-    {
-        return "&mut " + baseCodecName;
-    }
-    else
-    {
-        return baseCodecName;
-    }
+    return "            let " + paramName + " = " + generateTypeRead(paramType, "response_codec") + "?;\n";
 }
 
 std::string RustGenerator::generateServerParameterDeserialization(Function *fn, const std::string &codecParamName)

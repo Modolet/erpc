@@ -1,0 +1,16 @@
+# @file   test_rust_return_with_out.yml
+# @brief  Regression test for Rust responses that contain an out parameter and a scalar return value.
+# @author modolet <y@xxyx.io>
+# @date   2026-11-18
+---
+name: return_scalar_with_out_param
+desc: verify Rust clients read scalar return values by value after the out parameter
+idl: |
+  interface metrics {
+    get_cpu_usage(out float percent) -> bool
+  }
+lang: rust
+test.rs:
+  - let percent = response_codec.read_float()?;
+  - let return_value = response_codec.read_bool()?;
+  - Ok((return_value, percent))
