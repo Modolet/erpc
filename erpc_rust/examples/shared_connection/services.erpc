@@ -1,0 +1,9 @@
+// Two independent service clients on one transport.
+// Author: modolet <y@xxyx.io>, 2026-11-19.
+interface Sensor {
+    readTemperature() -> int32
+}
+
+interface Motor {
+    setSpeed(in uint32 rpm) -> uint32
+}

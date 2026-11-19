@@ -2,7 +2,7 @@
 
 use crate::auxiliary::{MessageInfo, MessageType, RequestContext};
 use crate::codec::{BasicCodecFactory, Codec, CodecFactory};
-use crate::error::{ErpcResult, RequestError};
+use crate::error::{ErpcResult, RequestError, TransportError};
 use crate::transport::rusb::RusbTransport;
 #[cfg(feature = "serial")]
 use crate::transport::SerialTransport;
@@ -231,6 +231,64 @@ where
     }
 }
 
+/// A connection shared by generated asynchronous service clients.
+pub struct Connection<T: Transport, F: CodecFactory = BasicCodecFactory> {
+    manager: Arc<tokio::sync::Mutex<Option<ClientManager<T, F>>>>,
+}
+
+impl<T: Transport, F: CodecFactory> Clone for Connection<T, F> {
+    fn clone(&self) -> Self {
+        Self {
+            manager: Arc::clone(&self.manager),
+        }
+    }
+}
+
+impl<T: Transport, F: CodecFactory> From<ClientManager<T, F>> for Connection<T, F> {
+    fn from(manager: ClientManager<T, F>) -> Self {
+        Self {
+            manager: Arc::new(tokio::sync::Mutex::new(Some(manager))),
+        }
+    }
+}
+
+impl<T: Transport, F: CodecFactory> Connection<T, F> {
+    /// Open a shared connection over an existing transport.
+    pub fn new(transport: T, codec_factory: F) -> Self {
+        ClientManager::new(transport, codec_factory).into()
+    }
+
+    /// Serialize an entire request/reply exchange across all service clients.
+    ///
+    /// Cancelling while queued leaves the connection usable. Once the exchange
+    /// starts, cancellation or a request error retires the transport: a partial
+    /// frame or an unread reply must never reach the next caller.
+    pub async fn perform_request(
+        &self,
+        service_id: u8,
+        method_id: u8,
+        is_oneway: bool,
+        request_data: Vec<u8>,
+    ) -> ErpcResult<Vec<u8>> {
+        let mut slot = self.manager.lock().await;
+        let mut manager = slot.take().ok_or(TransportError::Closed)?;
+        let reply = manager
+            .perform_request(service_id, method_id, is_oneway, request_data)
+            .await?;
+        *slot = Some(manager);
+        Ok(reply)
+    }
+
+    /// Wait for the current exchange and close the transport for every handle.
+    pub async fn close(&self) -> ErpcResult<()> {
+        let mut slot = self.manager.lock().await;
+        if let Some(mut manager) = slot.take() {
+            manager.close().await?;
+        }
+        Ok(())
+    }
+}
+
 /// Builder for creating ClientManager with configurable transport and codec
 pub struct ClientBuilder {
     transport_config: Option<TransportConfig>,
@@ -426,6 +484,46 @@ mod tests {
     use super::*;
     use crate::codec::BasicCodecFactory;
     use crate::transport::memory::MemoryTransport;
+
+    #[tokio::test]
+    async fn cancelling_a_queued_request_preserves_the_connection() {
+        let (transport, _) = MemoryTransport::pair();
+        let connection = Connection::new(transport, BasicCodecFactory::new());
+        let lock = connection.manager.lock().await;
+        {
+            let queued = connection.perform_request(1, 1, true, Vec::new());
+            tokio::pin!(queued);
+            assert!(futures::poll!(&mut queued).is_pending());
+        }
+        drop(lock);
+        connection
+            .perform_request(1, 1, true, Vec::new())
+            .await
+            .unwrap();
+
+        let other = connection.clone();
+        connection.close().await.unwrap();
+        assert!(matches!(
+            other.perform_request(1, 1, true, Vec::new()).await,
+            Err(crate::ErpcError::Transport(TransportError::Closed))
+        ));
+    }
+
+    #[tokio::test]
+    async fn cancelling_an_exchange_retires_the_connection_for_every_client() {
+        let (transport, mut peer) = MemoryTransport::pair();
+        let connection = Connection::new(transport, BasicCodecFactory::new());
+        {
+            let request = connection.perform_request(1, 1, false, Vec::new());
+            tokio::pin!(request);
+            assert!(futures::poll!(&mut request).is_pending());
+            peer.receive().await.unwrap();
+        }
+        assert!(matches!(
+            connection.perform_request(2, 1, false, Vec::new()).await,
+            Err(crate::ErpcError::Transport(TransportError::Closed))
+        ));
+    }
 
     #[tokio::test]
     async fn test_client_manager_creation() {

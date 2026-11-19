@@ -75,7 +75,7 @@ Add dependencies to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-erpc_rust = "0.1.0"
+erpc_rust = "0.3"
 tokio = { version = "1.0", features = ["full"] }
 async-trait = "0.1"
 serde = { version = "1.0", features = ["derive"] }
@@ -262,135 +262,42 @@ pub async fn setup_production_server() -> Result<(), Box<dyn std::error::Error +
 
 ### Step 5: Implement Client
 
-Create your client application:
+Create one connection, then construct a client for each service. Each client owns
+a handle to the connection and can be moved into a task or cloned independently.
 
 ```rust
-// src/client_impl.rs
 use crate::temp_alarm::temp_server::TempClient;
 use crate::temp_alarm::temp_async_server::TempAsyncClient;
-use erpc_rust::client::{ClientManager, CodecConfig};
+use erpc_rust::{codec::BasicCodecFactory, Connection, TcpTransport};
 
-pub async fn run_client() -> Result<(), Box<dyn std::error::Error>> {
-    println!("🚀 Starting eRPC Temperature Client...");
+pub async fn run_client() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let transport = TcpTransport::connect("127.0.0.1:40000").await?;
+    let connection = Connection::new(transport, BasicCodecFactory::new());
+    let temp = TempClient::new(&connection);
+    let notifications = TempAsyncClient::new(&connection);
 
-    // Connect to server
-    let mut client_manager = ClientManager::builder()
-        .tcp_connection("127.0.0.1:40000")
-        .codec(CodecConfig::Basic)
-        .connect()
-        .await?;
-
-    // Create service clients
-    let mut temp_client = TempClient::new(&mut client_manager);
-    let mut temp_async_client = TempAsyncClient::new(&mut client_manager);
-
-    // Use the services
-    let sensor_added = temp_client.add_sensor(1).await?;
-    println!("✅ Sensor added: {}", sensor_added);
-
-    let interval_set = temp_client.set_interval(1, 2.5).await?;
-    println!("✅ Interval set: {}", interval_set);
-
-    let temperature = temp_client.read_one_sensor(1).await?;
-    println!("✅ Temperature reading: {}", temperature);
-
-    // Send oneway notification
-    temp_async_client.sensor_reading(1, 25.3).await;
-    println!("✅ Sent sensor reading notification");
-
+    let reading = tokio::spawn(async move { temp.read_one_sensor(1).await });
+    notifications.sensor_reading(1, 25.3).await?;
+    println!("Temperature: {}", reading.await??);
+    connection.close().await?;
     Ok(())
 }
 ```
 
-#### Client Connection Patterns
+Run the self-contained two-task example with `cargo run --example shared_connection`.
+Its IDL and generated bindings are in `examples/shared_connection` inside the crate.
+To regenerate, run `erpcgen -g rust -o examples/shared_connection examples/shared_connection/services.erpc`
+from the crate directory, then run
+`rustfmt --edition 2021 examples/shared_connection/main.rs`.
 
-**Single Service Client:**
-```rust
-// Connect to specific service
-let mut client_manager = ClientManager::builder()
-    .tcp_connection("127.0.0.1:40000")
-    .codec(CodecConfig::Basic)
-    .connect().await?;
+The connection serializes complete exchanges. Dropping one client releases its
+handle. Closing the connection affects all clients. Cancelling a queued call is
+safe; cancelling an in-flight exchange or receiving a request error retires the
+connection. Open a new transport to reconnect.
 
-let mut temp_client = TempClient::new(&mut client_manager);
-```
-
-**Multiple Service Clients (Shared Connection):**
-```rust
-// Share connection across multiple service clients
-let mut client_manager = ClientManager::builder()
-    .tcp_connection("127.0.0.1:40000")
-    .codec(CodecConfig::Basic)
-    .connect().await?;
-
-// All clients share the same underlying connection
-let mut temp_client = TempClient::new(&mut client_manager);
-let mut temp_async_client = TempAsyncClient::new(&mut client_manager);
-let mut other_client = OtherServiceClient::new(&mut client_manager);
-```
-
-**Multiple Independent Connections:**
-```rust
-// Separate connections for different services/servers
-let mut temp_manager = ClientManager::builder()
-    .tcp_connection("127.0.0.1:40000")  // Temperature service server
-    .codec(CodecConfig::Basic)
-    .connect().await?;
-
-let mut admin_manager = ClientManager::builder()
-    .tcp_connection("127.0.0.1:40001")  // Admin service server
-    .codec(CodecConfig::Basic)
-    .connect().await?;
-
-let mut temp_client = TempClient::new(&mut temp_manager);
-let mut admin_client = AdminClient::new(&mut admin_manager);
-```
-
-**Client with Error Handling and Reconnection:**
-```rust
-use tokio::time::{sleep, Duration};
-
-pub async fn robust_client() -> Result<(), Box<dyn std::error::Error>> {
-    let mut retry_count = 0;
-    const MAX_RETRIES: u32 = 5;
-    
-    loop {
-        match ClientManager::builder()
-            .tcp_connection("127.0.0.1:40000")
-            .codec(CodecConfig::Basic)
-            .connect().await 
-        {
-            Ok(mut client_manager) => {
-                let mut temp_client = TempClient::new(&mut client_manager);
-                
-                // Use the client
-                match temp_client.add_sensor(1).await {
-                    Ok(result) => {
-                        println!("✅ Operation successful: {}", result);
-                        break; // Success, exit retry loop
-                    }
-                    Err(e) => {
-                        eprintln!("❌ RPC call failed: {}", e);
-                        // Connection established but RPC failed - this might be a different issue
-                        break;
-                    }
-                }
-            }
-            Err(e) => {
-                retry_count += 1;
-                if retry_count >= MAX_RETRIES {
-                    return Err(format!("Failed to connect after {} retries: {}", MAX_RETRIES, e).into());
-                }
-                
-                eprintln!("🔄 Connection failed (attempt {}/{}): {}", retry_count, MAX_RETRIES, e);
-                sleep(Duration::from_secs(2_u64.pow(retry_count))).await; // Exponential backoff
-            }
-        }
-    }
-    
-    Ok(())
-}
-```
+When migrating async bindings, regenerate them with the matching erpcgen.
+Existing manager builders can be used with `Connection::from(manager)`.
+Blocking clients continue to take a mutable blocking manager.
 
 ### Step 6: Main Application
 
@@ -440,41 +347,13 @@ cargo run server
 cargo run client
 ```
 
-## Alternative Client Connection Patterns
-
-### Direct Transport Access
-For advanced use cases or manual RPC handling:
-
-```rust
-use erpc_rust::client::ClientManager;
-
-// Get TCP transport directly
-let transport = ClientManager::tcp_connection("127.0.0.1:8080").await?;
-let mut client = YourGeneratedClient::new(transport);
-```
-
-### Explicit Component Construction
-Maximum control over transport and codec creation:
-
-```rust
-use erpc_rust::{
-    client::ClientManager,
-    codec::BasicCodecFactory,
-    transport::TcpTransport,
-};
-
-let transport = TcpTransport::connect("127.0.0.1:8080").await?;
-let codec_factory = BasicCodecFactory::new();
-let client_manager = ClientManager::new(transport, codec_factory);
-```
-
 ## Serial Transport Support
 
 Enable serial transport with the `serial` feature:
 
 ```toml
 [dependencies]
-erpc_rust = { version = "0.1.0", features = ["serial"] }
+erpc_rust = { version = "0.3", features = ["serial"] }
 ```
 
 ### Serial Connection Examples

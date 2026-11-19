@@ -18,4 +18,4 @@ test.rs:
   - "for item in &response {"
   - "codec.write_int32(*item as i32)?;"
   - not: "codec.write_int32(item as i32)?;"
-  - "pub async fn get_device_type(&mut self) -> Result<Vec<OisDeviceType>, Box<dyn std::error::Error + Send + Sync>>"
+  - "pub async fn get_device_type(&self) -> Result<Vec<OisDeviceType>, Box<dyn std::error::Error + Send + Sync>>"

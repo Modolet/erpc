@@ -45,7 +45,7 @@ pub mod transport;
 // Re-export commonly used types
 pub use auxiliary::{MessageInfo, MessageType, RequestContext};
 pub use blocking_client::BlockingClientManager;
-pub use client::ClientManager;
+pub use client::{ClientManager, Connection};
 pub use codec::{BasicCodec, BasicCodecFactory, Codec};
 pub use error::{ErpcError, ErpcResult};
 pub use server::blocking::{

@@ -17,6 +17,6 @@ lang: rust
 test.rs:
   - let length = codec.read_uint16()?;
   - let result = self.service.ois_sis7500_read_reg(axis, reg, length).await;
-  - "pub async fn ois_sis7500_read_reg(&mut self, axis: OisAxis, reg: u8, length: u16) -> Result<(OisErrorCode, Vec<u8>), Box<dyn std::error::Error + Send + Sync>>"
+  - "pub async fn ois_sis7500_read_reg(&self, axis: OisAxis, reg: u8, length: u16) -> Result<(OisErrorCode, Vec<u8>), Box<dyn std::error::Error + Send + Sync>>"
   - request_codec.write_uint16(length)?;
   - let val = response_codec.read_binary()?;

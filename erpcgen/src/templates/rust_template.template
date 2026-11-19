@@ -25,7 +25,7 @@ use erpc_rust::{
 {% else -- syncMode %}
     server::{BaseService, MethodHandler, Service},
     transport::Transport,
-    ClientManager, ErpcResult,
+    ErpcResult,
 {% endif -- syncMode %}
 };
 use serde::{Deserialize, Serialize};
@@ -316,47 +316,38 @@ pub mod {$interface.moduleName} {
 
 {% if interface.generateClient %}
     /// Client implementation for {$interface.name}
-    pub struct {$interface.name}Client<'a, T>
-    where
 {% if syncMode %}
-        T: BlockingTransport,
-{% else -- syncMode %}
-        T: Transport,
-{% endif -- syncMode %}
-    {
-{% if syncMode %}
+    pub struct {$interface.name}Client<'a, T: BlockingTransport> {
         client: &'a mut BlockingClientManager<T, BasicCodecFactory>,
-{% else -- syncMode %}
-        client: &'a mut ClientManager<T, BasicCodecFactory>,
-{% endif -- syncMode %}
     }
 
-    /// {$interface.name} client implementation
-    /// Matches eRPC IDL interface exactly with proper serialization
-    impl<'a, T> {$interface.name}Client<'a, T>
-    where
-{% if syncMode %}
-        T: BlockingTransport,
-{% else -- syncMode %}
-        T: Transport,
-{% endif -- syncMode %}
-    {
-{% if syncMode %}
+    impl<'a, T: BlockingTransport> {$interface.name}Client<'a, T> {
         pub fn new(client_manager: &'a mut BlockingClientManager<T, BasicCodecFactory>) -> Self {
-{% else -- syncMode %}
-        pub fn new(client_manager: &'a mut ClientManager<T, BasicCodecFactory>) -> Self {
-{% endif -- syncMode %}
-            Self {
-                client: client_manager,
-            }
+            Self { client: client_manager }
         }
+{% else -- syncMode %}
+    pub struct {$interface.name}Client<T: Transport, F: erpc_rust::codec::CodecFactory = BasicCodecFactory> {
+        client: erpc_rust::Connection<T, F>,
+    }
+
+    impl<T: Transport, F: erpc_rust::codec::CodecFactory> Clone for {$interface.name}Client<T, F> {
+        fn clone(&self) -> Self {
+            Self::new(&self.client)
+        }
+    }
+
+    impl<T: Transport, F: erpc_rust::codec::CodecFactory> {$interface.name}Client<T, F> {
+        pub fn new(connection: &erpc_rust::Connection<T, F>) -> Self {
+            Self { client: connection.clone() }
+        }
+{% endif -- syncMode %}
 
 {% for function in interface.functions %}
         {$function.comment}
 {% if syncMode %}
         pub fn {$function.name}(&mut self{$function.clientParameters}){$function.clientReturnType} {
 {% else -- syncMode %}
-        pub async fn {$function.name}(&mut self{$function.clientParameters}){$function.clientReturnType} {
+        pub async fn {$function.name}(&self{$function.clientParameters}){$function.clientReturnType} {
 {% endif -- syncMode %}
             {$function.clientMethodCode}
         }
